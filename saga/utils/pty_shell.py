@@ -1,5 +1,5 @@
 
-__author__    = "Andre Merzky"
+__author__    = "Andre Merzky, Ole Weidner"
 __copyright__ = "Copyright 2012-2013, The SAGA Project"
 __license__   = "MIT"
 
@@ -9,10 +9,19 @@ import os
 import sys
 import errno
 
-import saga.utils.logger            as sul
-import saga.utils.pty_shell_factory as supsf
-import saga.exceptions              as se
+import saga.utils.misc              as sumisc
+import radical.utils.logger         as rul
 
+import saga.utils.pty_shell_factory as supsf
+import saga.url                     as surl
+import saga.exceptions              as se
+import saga.session                 as ss
+
+import pty_exceptions               as ptye
+
+
+# ------------------------------------------------------------------------------
+#
 _PTY_TIMEOUT = 2.0
 
 # ------------------------------------------------------------------------------
@@ -67,7 +76,6 @@ class PTYShell (object) :
     details.
 
     Usage Example::
-    ^^^^^^^^^^^^^^^
 
         # start the shell, find its prompt.  
         self.shell = saga.utils.pty_shell.PTYShell ("ssh://user@remote.host.net/", contexts, self._logger)
@@ -93,8 +101,8 @@ class PTYShell (object) :
         assert (len(pbs_job_script) == int(out))
 
 
-    Data Staging and Data Management:
-    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    **Data Staging and Data Management:**
+    
 
     The PTYShell class does not only support command execution, but also basic
     data management: for SSH based shells, it will create a tunneled scp/sftp
@@ -108,8 +116,7 @@ class PTYShell (object) :
     management operations.  
 
 
-    Asynchronous Notifications:
-    ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    **Asynchronous Notifications:**
 
     A third pty process will be created for asynchronous notifications.  For
     that purpose, the shell started on the first channel will create a named
@@ -155,8 +162,7 @@ class PTYShell (object) :
     usually 4096), or to lock the pipe on larger writes.
 
 
-    Automated Restart, Timeouts:
-    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    **Automated Restart, Timeouts:**
 
     For timeout and restart semantics, please see the documentation to the
     underlying :class:`saga.utils.pty_process.PTYProcess` class.
@@ -171,10 +177,11 @@ class PTYShell (object) :
 
     # ----------------------------------------------------------------
     #
-    def __init__ (self, url, session, logger=None, init=None, opts={}) :
+    def __init__ (self, url, session=None, logger=None, init=None, opts={}) :
 
-        self.logger = logger
-        if  not  self.logger : self.logger = sul.getLogger ('PTYShell') 
+        if  None != logger  : self.logger  = logger
+        else                : self.logger  = rul.getLogger ('saga', 'PTYShell') 
+
         self.logger.debug ("PTYShell init %s" % self)
 
         self.url         = url      # describes the shell to run
@@ -242,21 +249,37 @@ class PTYShell (object) :
 
             # make sure this worked, and that we find the prompt. We use
             # a versatile prompt pattern to account for the custom shell case.
+            self.find (["^(.*[\$#%>])\s*$"])
+
+            # make sure this worked, and that we find the prompt. We use
+            # a versatile prompt pattern to account for the custom shell case.
             try :
                 # set and register new prompt
                 self.run_async  ("unset PROMPT_COMMAND ; "
                                      + "PS1='PROMPT-$?->'; "
                                      + "PS2=''; "
-                                     + "export PS1 PS2 2>&1 >/dev/null; true\n")
+                                     + "export PS1 PS2 2>&1 >/dev/null\n")
                 self.set_prompt (new_prompt="PROMPT-(\d+)->$")
 
                 self.logger.debug ("got new shell prompt")
 
-            except se.SagaException as e :
-                raise
-
             except Exception as e :
                 raise se.NoSuccess ("Shell startup on target host failed: %s" % e)
+
+
+            try :
+                # got a command shell, finally!
+                # for local shells, we now change to the current working
+                # directory.  Remote shells will remain in the default pwd
+                # (usually $HOME).
+                if  sumisc.host_is_local (surl.Url(self.url).host) :
+                    pwd = os.getcwd ()
+                    self.run_sync ('cd %s' % pwd)
+            except Exception as e :
+                # We will ignore any errors.
+                self.logger.warning ("local cd to %s failed" % pwd)
+                
+                
 
             self.initialized = True
 
@@ -289,7 +312,7 @@ class PTYShell (object) :
                 return self.pty_shell.alive (recover)
 
             except Exception as e :
-                raise self._translate_exception (e)
+                raise ptye.translate_exception (e)
 
 
     # ----------------------------------------------------------------
@@ -310,16 +333,18 @@ class PTYShell (object) :
             try :
 
                 match = None
+                fret  = None
 
-                while not match :
-                    _, match = self.pty_shell.find ([self.prompt], _PTY_TIMEOUT)
-
+                while fret == None :
+                    fret, match = self.pty_shell.find ([self.prompt], _PTY_TIMEOUT)
+                
+              # self.logger.debug  ("find prompt '%s' in '%s'" % (self.prompt, match))
                 ret, txt = self._eval_prompt (match)
 
                 return (ret, txt)
 
             except Exception as e :
-                raise self._translate_exception (e)
+                raise ptye.translate_exception (e)
 
 
     # ----------------------------------------------------------------
@@ -335,7 +360,7 @@ class PTYShell (object) :
                 return self.pty_shell.find (patterns, timeout=timeout)
 
             except Exception as e :
-                raise self._translate_exception (e)
+                raise ptye.translate_exception (e)
 
 
     # ----------------------------------------------------------------
@@ -395,9 +420,6 @@ class PTYShell (object) :
             while True :
 
                 try :
-                  # self.pty_shell.write ("\n")
-                  # self.logger.error  ("sent prompt trigger")
-
                     # make sure we have a non-zero waiting delay (default to
                     # 1 second)
                     delay = 10 * self.latency
@@ -406,11 +428,9 @@ class PTYShell (object) :
 
                     # FIXME: how do we know that _PTY_TIMOUT suffices?  In particular if
                     # we actually need to flush...
-                    _, match  = self.pty_shell.find ([self.prompt], delay)
+                    fret, match = self.pty_shell.find ([self.prompt], delay)
 
-                  # self.logger.error  ("got match (%s)" % match)
-
-                    if not match :
+                    if  fret == None :
                     
                         retries += 1
                         if  retries > 10 :
@@ -436,7 +456,7 @@ class PTYShell (object) :
 
                 except Exception as e :
                     self.prompt = old_prompt
-                    raise self._translate_exception (e, "Could not set shell prompt")
+                    raise ptye.translate_exception (e, "Could not set shell prompt")
 
 
             # got a valid prompt -- but we have to sync the output again in
@@ -446,9 +466,9 @@ class PTYShell (object) :
                 self.run_async ('printf "SYNCHRONIZE_PROMPT\n"')
 
                 # FIXME: better timout value?
-                _, match = self.pty_shell.find (["SYNCHRONIZE_PROMPT"], timeout=1.0)  
+                fret, match = self.pty_shell.find (["SYNCHRONIZE_PROMPT"], timeout=1.0)  
 
-                if not match :
+                if  fret == None :
                     # not find prompt after blocking?  BAD!  Restart the shell
                     self.finalize (kill_pty=True)
                     raise se.NoSuccess ("Could not synchronize prompt detection")
@@ -504,7 +524,7 @@ class PTYShell (object) :
 
             except Exception as e :
                 
-                raise self._translate_exception (e, "Could not eval prompt")
+                raise ptye.translate_exception (e, "Could not eval prompt")
 
 
 
@@ -605,9 +625,9 @@ class PTYShell (object) :
                     prompt = new_prompt
 
                 # command has been started - now find prompt again.  
-                _, match = self.pty_shell.find ([prompt], timeout=-1.0)  # blocks
+                fret, match = self.pty_shell.find ([prompt], timeout=-1.0)  # blocks
 
-                if not match :
+                if  fret == None :
                     # not find prompt after blocking?  BAD!  Restart the shell
                     self.finalize (kill_pty=True)
                     raise se.IncorrectState ("run_sync failed, no prompt (%s)" % command)
@@ -628,9 +648,9 @@ class PTYShell (object) :
                     stdout =  txt
 
                     self.pty_shell.write ("cat %s\n" % _err)
-                    _, match = self.pty_shell.find ([self.prompt], timeout=-1.0)  # blocks
+                    fret, match = self.pty_shell.find ([self.prompt], timeout=-1.0)  # blocks
 
-                    if not match :
+                    if  fret == None :
                         # not find prompt after blocking?  BAD!  Restart the shell
                         self.finalize (kill_pty=True)
                         raise se.IncorrectState ("run_sync failed, no prompt (%s)" \
@@ -655,7 +675,7 @@ class PTYShell (object) :
                 return (ret, stdout, stderr)
 
             except Exception as e :
-                raise self._translate_exception (e)
+                raise ptye.translate_exception (e)
 
 
     # ----------------------------------------------------------------
@@ -687,7 +707,7 @@ class PTYShell (object) :
                 self.send ("%s\n" % command)
 
             except Exception as e :
-                raise self._translate_exception (e)
+                raise ptye.translate_exception (e)
 
 
     # ----------------------------------------------------------------
@@ -707,7 +727,7 @@ class PTYShell (object) :
                 self.pty_shell.write ("%s" % data)
 
             except Exception as e :
-                raise self._translate_exception (e)
+                raise ptye.translate_exception (e)
 
     # ----------------------------------------------------------------
     #
@@ -744,7 +764,7 @@ class PTYShell (object) :
             os.remove (fname)
 
         except Exception as e :
-            raise self._translate_exception (e)
+            raise ptye.translate_exception (e)
 
 
     # ----------------------------------------------------------------
@@ -775,7 +795,7 @@ class PTYShell (object) :
             return out
 
         except Exception as e :
-            raise self._translate_exception (e)
+            raise ptye.translate_exception (e)
 
 
     # ----------------------------------------------------------------
@@ -800,7 +820,7 @@ class PTYShell (object) :
             self.factory.run_copy_to (self.pty_info, src, tgt, cp_flags)
 
         except Exception as e :
-            raise self._translate_exception (e)
+            raise ptye.translate_exception (e)
 
     # ----------------------------------------------------------------
     #
@@ -824,57 +844,9 @@ class PTYShell (object) :
             self.factory.run_copy_from (self.pty_info, src, tgt, cp_flags)
 
         except Exception as e :
-            raise self._translate_exception (e)
+            raise ptye.translate_exception (e)
 
 
-    # ----------------------------------------------------------------
-    #
-    def _translate_exception (self, e, msg=None) :
-        """
-        In many cases, we should be able to roughly infer the exception cause
-        from the error message -- this is centrally done in this method.  If
-        possible, it will return a new exception with a more concise error
-        message and appropriate exception type.
-        """
-
-        if  not issubclass (e.__class__, se.SagaException) :
-            # we do not touch non-saga exceptions
-            return e
-
-        if  not issubclass (e.__class__, se.NoSuccess) :
-            # this seems to have a specific cause already, leave it alone
-            return e
-
-        cmsg = e._plain_message
-        lmsg = cmsg.lower ()
-
-        if  msg :
-            cmsg = "%s (%s)" % (cmsg, msg)
-
-        if 'auth' in lmsg :
-            e = se.AuthorizationFailed (cmsg)
-
-        elif 'pass' in lmsg :
-            e = se.AuthenticationFailed (cmsg)
-
-        elif 'ssh_exchange_identification' in lmsg :
-            e = se.AuthenticationFailed ("too frequent login attempts, or sshd misconfiguration: %s" % cmsg)
-
-        elif 'denied' in lmsg :
-            e = se.PermissionDenied (cmsg)
-
-        elif 'shared connection' in lmsg :
-            e = se.NoSuccess ("Insufficient system resources: %s" % cmsg)
-
-        elif 'pty allocation' in lmsg :
-            e = se.NoSuccess ("Insufficient system resources: %s" % cmsg)
-
-        elif 'Connection to master closed' in lmsg :
-            e = se.NoSuccess ("Connection failed (insufficient system resources?): %s" % cmsg)
-
-        # print e.traceback
-        return e
 
 
-# vim: tabstop=8 expandtab shiftwidth=4 softtabstop=4
 

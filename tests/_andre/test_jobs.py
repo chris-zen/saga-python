@@ -21,8 +21,8 @@ try :
   # s.add_context (c)
 
 
-    js = saga.job.Service ('ssh://localhost/bin/sh', session=s)
-    js = saga.job.Service ('gsissh://gsissh.kraken.nics.xsede.org', session=s)
+  # js = saga.job.Service ('gsissh://gsissh.kraken.nics.xsede.org', session=s)
+    js = saga.job.Service ('ssh://localhost/', session=s)
   
     jd = saga.job.Description ()
     jd.executable = '/bin/echo'
@@ -54,5 +54,5 @@ except saga.SagaException as e :
     print str(e)
 
 
-# vim: tabstop=8 expandtab shiftwidth=4 softtabstop=4
+
 
