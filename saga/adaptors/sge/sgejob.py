@@ -159,7 +159,7 @@ Valid options are: %s" % (jd.spmd_variation, pe_list))
         # the only way to do this, IMHO...
         if memreqs is None:
             raise Exception("When using 'total_physical_memory' with the SGE adaptor, the query parameters of the job.Service URL must define the attributes used by your particular instance of SGE to control memory allocation.\n 'virtual_free', 'h_vmem' or 'mem_req' are commonly encountered examples of such attributes.\n A valid job.Service URL could be for instance:\n 'sge+ssh://myserver.edu?memreqs=virtual_free~1.5h_vmem'\n here the attribute 'virtual_free' would be set to 'total_physical_memory' and the attribute 'h_vmem' would be set to 1.5*'total_physical_memory', '~' is used as a separator.")            
-        
+
         flags, multipliers = _parse_memreqs(memreqs)
         for flag,mult in zip(flags, multipliers):
             sge_params += "#$ -l %s=%sm \n" % (flag, int (round (mult*int(jd.total_physical_memory) ) ) )
@@ -442,7 +442,7 @@ class SGEJobService (saga.adaptors.cpi.job.Service):
                     self.pe_list.append(pe)
             self._logger.debug("Available processing elements: %s" %
                 (self.pe_list))
-         
+
         # find out mandatory and optional memory attributes 
         ret, out, _ = self.shell.run_sync('%s -sc' % (self._commands['qconf']['path']))
         if ret != 0:
@@ -483,7 +483,7 @@ class SGEJobService (saga.adaptors.cpi.job.Service):
         if not (invalid_attrs == []):
             message = "The following memory attribute(s) were specified in the job.Service URL but are not valid memory attributes in your SGE environment: %s" % ' '.join(invalid_attrs)
             log_error_and_raise(message, saga.BadParameter, self._logger)
-                    
+
 
     # ----------------------------------------------------------------
     #
